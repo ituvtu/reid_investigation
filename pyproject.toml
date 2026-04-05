@@ -1,0 +1,11 @@
+[project]
+name = "reid-investigation"
+version = "0.1.0"
+description = "Modular soccer tracking and ReID investigation pipeline for local and Colab experiments"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "jupyter-http-over-ws>=0.0.8",
+    "torch>=2.11.0",
+]

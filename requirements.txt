@@ -1,0 +1,41 @@
+# Environment: Python 3.12;
+# Runtime target: Google Colab T4 with CUDA;
+
+# Core scientific and utility stack;
+numpy>=1.26,<3.0
+scipy>=1.11
+pandas>=2.2
+PyYAML>=6.0.1
+tqdm>=4.66
+opencv-python>=4.10.0.84
+pillow>=10.4
+matplotlib>=3.9
+seaborn>=0.13
+scikit-learn>=1.5
+
+# Deep learning runtime;
+torch>=2.3,<2.6
+torchvision>=0.18,<0.21
+torchaudio>=2.3,<2.6
+timm>=1.0.15
+einops>=0.8.0
+
+# Detection and tracking;
+ultralytics>=8.3.0
+filterpy>=1.4.5
+lapx>=0.5.11
+cython_bbox>=0.1.5
+motmetrics>=1.4.0
+SoccerNet>=0.1.62
+git+https://github.com/JonathonLuiten/TrackEval.git
+
+# Re-identification;
+torchreid>=0.2.5
+faiss-cpu>=1.8.0.post1
+
+# Foundation feature extraction;
+git+https://github.com/facebookresearch/dinov2.git
+
+# Notebook orchestration;
+jupyter>=1.1.1
+ipykernel>=6.29.5

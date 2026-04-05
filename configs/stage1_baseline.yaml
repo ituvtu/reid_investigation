@@ -1,0 +1,44 @@
+experiment_name: stage1_baseline
+seed: 42
+
+detector:
+  type: yolo26
+  model_name: yolo26m
+  weights_path: yolo26m.pt
+  nms_free: true
+  img_size: 1280
+  max_detections: 200
+  confidence_threshold: 0.25
+  iou_threshold: 0.7
+  classes: [0]
+  half_precision: true
+  device: null
+
+tracker:
+  type: bytetrack
+  track_threshold: 0.5
+  track_low_threshold: 0.1
+  new_track_threshold: 0.6
+  match_threshold: 0.8
+  track_buffer: 30
+  min_box_area: 10.0
+  frame_rate: 25
+  mot20: false
+  use_embeddings: false
+  embedding_weight: 0.4
+  motion_weight: 0.6
+  device: null
+
+runtime:
+  use_cuda: true
+  cudnn_benchmark: true
+  num_workers: 2
+  pin_memory: true
+
+dataset:
+  soccernet:
+    root_dir: /content/drive/MyDrive/SoccerNet
+    subset: tracking
+    split: [train, valid, test]
+    password: null
+    auto_download: true

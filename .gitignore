@@ -1,0 +1,72 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# Build and packaging artifacts
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Notebook cache files
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Coverage and test reports
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor and IDE folders
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Local data and experiment outputs
+data/
+datasets/
+artifacts/
+outputs/
+runs/
+logs/
+checkpoints/
+weights/
+
+# Model binaries
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Temporary files
+*.tmp
+*.log
