@@ -8,6 +8,14 @@ import numpy as np
 from core.base_tracker import Track
 
 
+# motmetrics currently calls np.asfarray, removed in NumPy 2.0.
+if not hasattr(np, "asfarray"):
+    def _asfarray_compat(values, dtype=np.float64):
+        return np.asarray(values, dtype=dtype)
+
+    np.asfarray = _asfarray_compat
+
+
 class MetricsError(RuntimeError):
     pass
 

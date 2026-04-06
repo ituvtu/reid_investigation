@@ -1,4 +1,4 @@
-experiment_name: stage1_baseline
+experiment_name: stage2_standard_reid
 seed: 42
 
 detector:
@@ -24,9 +24,21 @@ tracker:
   min_box_area: 10.0
   frame_rate: 25
   mot20: false
-  use_embeddings: false
+  use_embeddings: true
+  association_alpha: 0.6
   embedding_weight: 0.4
   motion_weight: 0.6
+  device: null
+
+reid:
+  type: osnet
+  model_name: osnet_x1_0
+  pretrained: true
+  model_path: null
+  input_size: [256, 128]
+  batch_size: 32
+  fp16: true
+  normalize_embeddings: true
   device: null
 
 runtime:

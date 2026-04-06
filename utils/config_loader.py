@@ -39,8 +39,23 @@ class TrackerConfig:
     frame_rate: int
     mot20: bool
     use_embeddings: bool
+    association_alpha: float | None
     embedding_weight: float
     motion_weight: float
+    device: str | None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class ReIDConfig:
+    type: str
+    model_name: str
+    pretrained: bool
+    model_path: str | None
+    input_size: tuple[int, int]
+    batch_size: int
+    fp16: bool
+    normalize_embeddings: bool
     device: str | None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -76,6 +91,17 @@ class Stage1BaselineConfig:
     seed: int
     detector: DetectorConfig
     tracker: TrackerConfig
+    runtime: RuntimeConfig
+    dataset: DatasetConfig | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class Stage2ReIDConfig:
+    experiment_name: str
+    seed: int
+    detector: DetectorConfig
+    tracker: TrackerConfig
+    reid: ReIDConfig
     runtime: RuntimeConfig
     dataset: DatasetConfig | None = None
 
@@ -116,10 +142,22 @@ def _as_float(value: Any, field_name: str) -> float:
     return float(value)
 
 
+def _as_optional_float(value: Any, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _as_float(value, field_name)
+
+
 def _as_optional_str(value: Any, field_name: str) -> str | None:
     if value is None:
         return None
     return _as_str(value, field_name)
+
+
+def _as_int_pair(value: Any, field_name: str) -> tuple[int, int]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ConfigLoaderError(f"Expected [int, int] list at '{field_name}'")
+    return _as_int(value[0], f"{field_name}[0]"), _as_int(value[1], f"{field_name}[1]")
 
 
 def _as_optional_class_ids(value: Any, field_name: str) -> tuple[int, ...] | None:
@@ -193,6 +231,7 @@ def parse_stage1_baseline_config(data: Mapping[str, Any]) -> Stage1BaselineConfi
         "frame_rate",
         "mot20",
         "use_embeddings",
+        "association_alpha",
         "embedding_weight",
         "motion_weight",
         "device",
@@ -227,6 +266,7 @@ def parse_stage1_baseline_config(data: Mapping[str, Any]) -> Stage1BaselineConfi
         frame_rate=_as_int(tracker_raw.get("frame_rate"), "tracker.frame_rate"),
         mot20=_as_bool(tracker_raw.get("mot20"), "tracker.mot20"),
         use_embeddings=_as_bool(tracker_raw.get("use_embeddings"), "tracker.use_embeddings"),
+        association_alpha=_as_optional_float(tracker_raw.get("association_alpha"), "tracker.association_alpha"),
         embedding_weight=_as_float(tracker_raw.get("embedding_weight"), "tracker.embedding_weight"),
         motion_weight=_as_float(tracker_raw.get("motion_weight"), "tracker.motion_weight"),
         device=_as_optional_str(tracker_raw.get("device"), "tracker.device"),
@@ -276,6 +316,51 @@ def load_stage1_baseline_config(path: str | Path) -> Stage1BaselineConfig:
     return parse_stage1_baseline_config(payload)
 
 
+def parse_stage2_reid_config(data: Mapping[str, Any]) -> Stage2ReIDConfig:
+    baseline = parse_stage1_baseline_config(data)
+    reid_raw = _as_mapping(data.get("reid"), "reid")
+
+    reid_known = {
+        "type",
+        "model_name",
+        "pretrained",
+        "model_path",
+        "input_size",
+        "batch_size",
+        "fp16",
+        "normalize_embeddings",
+        "device",
+    }
+
+    reid = ReIDConfig(
+        type=_as_str(reid_raw.get("type"), "reid.type"),
+        model_name=_as_str(reid_raw.get("model_name"), "reid.model_name"),
+        pretrained=_as_bool(reid_raw.get("pretrained"), "reid.pretrained"),
+        model_path=_as_optional_str(reid_raw.get("model_path"), "reid.model_path"),
+        input_size=_as_int_pair(reid_raw.get("input_size"), "reid.input_size"),
+        batch_size=_as_int(reid_raw.get("batch_size"), "reid.batch_size"),
+        fp16=_as_bool(reid_raw.get("fp16"), "reid.fp16"),
+        normalize_embeddings=_as_bool(reid_raw.get("normalize_embeddings"), "reid.normalize_embeddings"),
+        device=_as_optional_str(reid_raw.get("device"), "reid.device"),
+        extra=_extra_fields(reid_raw, reid_known),
+    )
+
+    return Stage2ReIDConfig(
+        experiment_name=baseline.experiment_name,
+        seed=baseline.seed,
+        detector=baseline.detector,
+        tracker=baseline.tracker,
+        reid=reid,
+        runtime=baseline.runtime,
+        dataset=baseline.dataset,
+    )
+
+
+def load_stage2_reid_config(path: str | Path) -> Stage2ReIDConfig:
+    payload = load_yaml(path)
+    return parse_stage2_reid_config(payload)
+
+
 def detector_config_to_mapping(config: DetectorConfig) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "type": config.type,
@@ -306,8 +391,25 @@ def tracker_config_to_mapping(config: TrackerConfig) -> dict[str, Any]:
         "frame_rate": config.frame_rate,
         "mot20": config.mot20,
         "use_embeddings": config.use_embeddings,
+        "association_alpha": config.association_alpha,
         "embedding_weight": config.embedding_weight,
         "motion_weight": config.motion_weight,
+        "device": config.device,
+    }
+    payload.update(config.extra)
+    return payload
+
+
+def reid_config_to_mapping(config: ReIDConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": config.type,
+        "model_name": config.model_name,
+        "pretrained": config.pretrained,
+        "model_path": config.model_path,
+        "input_size": [config.input_size[0], config.input_size[1]],
+        "batch_size": config.batch_size,
+        "fp16": config.fp16,
+        "normalize_embeddings": config.normalize_embeddings,
         "device": config.device,
     }
     payload.update(config.extra)
@@ -328,6 +430,14 @@ def soccernet_config_to_mapping(config: SoccerNetConfig) -> dict[str, Any]:
 
 def stage1_component_mappings(config: Stage1BaselineConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     return detector_config_to_mapping(config.detector), tracker_config_to_mapping(config.tracker)
+
+
+def stage2_component_mappings(config: Stage2ReIDConfig) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    return (
+        detector_config_to_mapping(config.detector),
+        tracker_config_to_mapping(config.tracker),
+        reid_config_to_mapping(config.reid),
+    )
 
 
 def stage1_soccernet_mapping(config: Stage1BaselineConfig) -> dict[str, Any] | None:

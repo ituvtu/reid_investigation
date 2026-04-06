@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import inspect
 import json
 import os
@@ -27,6 +28,7 @@ class SoccerNetDownloadConfig:
 
 class SoccerNetLoader:
     VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
+    ANNOTATION_EXTENSIONS = (".json", ".csv", ".txt")
 
     def __init__(self, config: SoccerNetDownloadConfig) -> None:
         self.root_dir = Path(config.root_dir).expanduser()
@@ -73,28 +75,42 @@ class SoccerNetLoader:
         )
 
     def ensure_dataset(self, force_download: bool = False) -> Path:
-        self.root_dir.mkdir(parents=True, exist_ok=True)
-
-        if self.dataset_exists() and not force_download:
-            return self.root_dir
+        existing_root = self._resolve_existing_dataset_root()
+        if existing_root is not None and not force_download:
+            self.root_dir = existing_root
+            return existing_root
 
         if not self.auto_download and not force_download:
             raise SoccerNetLoaderError(
                 f"SoccerNet data was not found at {self.root_dir}; set a valid local dataset path or enable auto_download"
             )
 
+        download_root = self._resolve_download_root()
+        try:
+            download_root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise SoccerNetLoaderError(
+                f"Unable to prepare SoccerNet download directory: {download_root}; {error}"
+            ) from error
+
+        self.root_dir = download_root
+
         self.download_tracking_subset()
 
-        if not self.dataset_exists():
+        resolved_root = self._resolve_existing_dataset_root()
+        if resolved_root is None:
             raise SoccerNetLoaderError(
                 f"Download completed but dataset files were not found at {self.root_dir}"
             )
-        return self.root_dir
+        self.root_dir = resolved_root
+        return resolved_root
 
     def dataset_exists(self) -> bool:
-        video_exists = len(self.find_video_files(max_results=1)) > 0
-        annotation_exists = len(self.find_annotation_files(max_results=1)) > 0
-        return video_exists or annotation_exists
+        resolved_root = self._resolve_existing_dataset_root()
+        if resolved_root is None:
+            return False
+        self.root_dir = resolved_root
+        return True
 
     def download_tracking_subset(self) -> None:
         try:
@@ -221,11 +237,12 @@ class SoccerNetLoader:
         for search_root in self._search_roots():
             if not os.path.exists(search_root):
                 continue
-            for path in search_root.rglob("*.json"):
-                if path.is_file():
-                    candidates.append(path)
-                    if max_results is not None and len(candidates) >= max_results:
-                        return sorted(candidates)
+            for extension in self.ANNOTATION_EXTENSIONS:
+                for path in search_root.rglob(f"*{extension}"):
+                    if path.is_file():
+                        candidates.append(path)
+                        if max_results is not None and len(candidates) >= max_results:
+                            return sorted(candidates)
         return sorted(candidates)
 
     def get_default_video_path(self) -> Path:
@@ -259,6 +276,9 @@ class SoccerNetLoader:
         if not os.path.exists(target_path):
             raise SoccerNetLoaderError(f"Annotation file was not found: {target_path}")
 
+        if target_path.suffix.lower() in {".csv", ".txt"}:
+            return self._load_tracking_csv_annotations(target_path)
+
         with target_path.open("r", encoding="utf-8") as file:
             payload = json.load(file)
 
@@ -267,6 +287,100 @@ class SoccerNetLoader:
         if isinstance(payload, dict):
             return payload
         raise SoccerNetLoaderError("Unsupported annotation JSON content")
+
+    def _load_tracking_csv_annotations(self, path: Path) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8", newline="") as file:
+            reader = csv.reader(file)
+            first_row = next(reader, None)
+            if first_row is None:
+                return records
+
+            has_header = not self._is_numeric(first_row[0])
+            header: list[str] | None = None
+
+            if has_header:
+                header = [item.strip().lower() for item in first_row]
+            else:
+                self._append_mot_row_record(records, first_row)
+
+            for row in reader:
+                if not row:
+                    continue
+                if header is None:
+                    self._append_mot_row_record(records, row)
+                else:
+                    self._append_header_row_record(records, row, header)
+
+        return records
+
+    @staticmethod
+    def _append_mot_row_record(records: list[dict[str, Any]], row: list[str]) -> None:
+        if len(row) < 6:
+            return
+        try:
+            records.append(
+                {
+                    "frame": int(float(row[0])),
+                    "track_id": int(float(row[1])),
+                    "x": float(row[2]),
+                    "y": float(row[3]),
+                    "w": float(row[4]),
+                    "h": float(row[5]),
+                    "confidence": float(row[6]) if len(row) > 6 and row[6] != "" else 1.0,
+                }
+            )
+        except (TypeError, ValueError):
+            return
+
+    @staticmethod
+    def _append_header_row_record(records: list[dict[str, Any]], row: list[str], header: list[str]) -> None:
+        mapping = {header[index]: row[index] for index in range(min(len(header), len(row)))}
+        if not mapping:
+            return
+
+        frame_value = (
+            mapping.get("frame")
+            or mapping.get("frame_id")
+            or mapping.get("image_id")
+            or mapping.get("frameindex")
+        )
+        track_value = (
+            mapping.get("track_id")
+            or mapping.get("id")
+            or mapping.get("object_id")
+            or mapping.get("player_id")
+        )
+        x = mapping.get("x") or mapping.get("left") or mapping.get("xmin")
+        y = mapping.get("y") or mapping.get("top") or mapping.get("ymin")
+        w = mapping.get("w") or mapping.get("width")
+        h = mapping.get("h") or mapping.get("height")
+
+        if frame_value is None or track_value is None or x is None or y is None or w is None or h is None:
+            return
+
+        try:
+            records.append(
+                {
+                    "frame": int(float(frame_value)),
+                    "track_id": int(float(track_value)),
+                    "x": float(x),
+                    "y": float(y),
+                    "w": float(w),
+                    "h": float(h),
+                    "confidence": float(mapping.get("confidence", mapping.get("score", 1.0))),
+                }
+            )
+        except (TypeError, ValueError):
+            return
+
+    @staticmethod
+    def _is_numeric(value: str) -> bool:
+        try:
+            float(value)
+            return True
+        except (TypeError, ValueError):
+            return False
 
     def iter_video_frames(
         self,
@@ -452,11 +566,74 @@ class SoccerNetLoader:
 
     def _search_roots(self) -> list[Path]:
         roots: list[Path] = []
-        subset_root = self.root_dir / self.subset
-        if os.path.exists(subset_root):
-            roots.append(subset_root)
-        roots.append(self.root_dir)
+        for candidate_root in self._candidate_dataset_roots():
+            subset_root = candidate_root / self.subset
+            self._append_candidate_root(roots, subset_root)
+            self._append_candidate_root(roots, candidate_root)
         return roots
+
+    def _resolve_existing_dataset_root(self) -> Path | None:
+        payload_extensions = self.VIDEO_EXTENSIONS + self.ANNOTATION_EXTENSIONS + (".zip",)
+
+        for candidate_root in self._candidate_dataset_roots():
+            search_targets = [candidate_root / self.subset, candidate_root]
+            for search_target in search_targets:
+                if not os.path.exists(search_target):
+                    continue
+
+                for extension in payload_extensions:
+                    if any(search_target.rglob(f"*{extension}")):
+                        return candidate_root
+        return None
+
+    def _candidate_dataset_roots(self) -> list[Path]:
+        roots: list[Path] = []
+
+        env_root = os.environ.get("SOCCERNET_ROOT_DIR", "").strip()
+        if env_root:
+            self._append_candidate_root(roots, Path(env_root).expanduser())
+
+        self._append_candidate_root(roots, self.root_dir)
+
+        if self._is_kaggle_environment():
+            input_root = Path("/kaggle/input")
+            self._append_candidate_root(roots, Path("/kaggle/input/SoccerNet"))
+            self._append_candidate_root(roots, Path("/kaggle/input/soccernet"))
+            self._append_candidate_root(roots, Path("/kaggle/input/soccernet-tracking"))
+
+            if os.path.exists(input_root):
+                for child in sorted(input_root.iterdir()):
+                    if child.is_dir() and "soccernet" in child.name.lower():
+                        self._append_candidate_root(roots, child)
+
+            self._append_candidate_root(roots, Path("/kaggle/working/data/SoccerNet"))
+            self._append_candidate_root(roots, Path("/kaggle/temp/SoccerNet"))
+
+        if os.path.exists("/content"):
+            self._append_candidate_root(roots, Path("/content/drive/MyDrive/SoccerNet"))
+            self._append_candidate_root(roots, Path("/content/SoccerNet"))
+
+        return roots
+
+    def _resolve_download_root(self) -> Path:
+        override = os.environ.get("SOCCERNET_DOWNLOAD_ROOT", "").strip()
+        if override:
+            return Path(override).expanduser()
+
+        if self._is_kaggle_environment():
+            return Path("/kaggle/working/data/SoccerNet")
+
+        return self.root_dir
+
+    @staticmethod
+    def _append_candidate_root(roots: list[Path], candidate: Path) -> None:
+        expanded = candidate.expanduser()
+        if expanded not in roots:
+            roots.append(expanded)
+
+    @staticmethod
+    def _is_kaggle_environment() -> bool:
+        return bool(os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"))
 
     @staticmethod
     def _contains_any_files(directory: Path) -> bool:

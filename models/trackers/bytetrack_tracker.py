@@ -5,6 +5,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.optimize import linear_sum_assignment
 
 from core.base_detector import Detection
 from core.base_tracker import (
@@ -42,10 +43,22 @@ class ByteTrackTracker(BaseTracker):
         self.track_buffer = int(config.get("track_buffer", 30))
         self.min_box_area = float(config.get("min_box_area", 10.0))
         self.use_embeddings = bool(config.get("use_embeddings", False))
-        self.embedding_weight = float(config.get("embedding_weight", 0.4))
-        self.motion_weight = float(config.get("motion_weight", 0.6))
 
-        self._match_score_threshold = max(0.0, min(1.0, 1.0 - self.match_threshold))
+        association_alpha = config.get("association_alpha")
+        if association_alpha is None:
+            motion_weight = float(config.get("motion_weight", 0.6))
+            embedding_weight = float(config.get("embedding_weight", 0.4))
+            total_weight = motion_weight + embedding_weight
+            if total_weight <= 0.0:
+                association_alpha = 0.5
+            else:
+                association_alpha = motion_weight / total_weight
+
+        self.association_alpha = float(max(0.0, min(1.0, float(association_alpha))))
+        self.motion_weight = self.association_alpha
+        self.embedding_weight = 1.0 - self.association_alpha
+
+        self._match_cost_threshold = max(0.0, min(1.0, 1.0 - self.match_threshold))
         self._device = str(config.get("device") or self._auto_device())
         self._active_tracks: dict[int, _TrackState] = {}
         self._next_track_id = 1
@@ -261,53 +274,93 @@ class ByteTrackTracker(BaseTracker):
         if not track_ids or not detection_indices:
             return []
 
-        track_pool = track_ids.copy()
-        detection_pool = detection_indices.copy()
+        cost_matrix = self._build_cost_matrix(
+            track_ids=track_ids,
+            detection_indices=detection_indices,
+            boxes=boxes,
+            embeddings=embeddings,
+        )
+        if cost_matrix.size == 0:
+            return []
+
+        if linear_sum_assignment is not None:
+            row_indices, col_indices = linear_sum_assignment(cost_matrix)
+        else:  # pragma: no cover
+            row_indices, col_indices = self._greedy_assignment(cost_matrix)
+
         matches: list[tuple[int, int]] = []
 
-        while track_pool and detection_pool:
-            best_score = -1.0
-            best_pair: tuple[int, int] | None = None
-
-            for track_id in track_pool:
-                track_state = self._active_tracks[track_id]
-                for detection_index in detection_pool:
-                    score = self._association_score(
-                        track_state=track_state,
-                        detection_box=boxes[detection_index],
-                        detection_embedding=None if embeddings is None else embeddings[detection_index],
-                    )
-                    if score > best_score:
-                        best_score = score
-                        best_pair = (track_id, detection_index)
-
-            if best_pair is None or best_score < self._match_score_threshold:
-                break
-
-            matches.append(best_pair)
-            track_pool.remove(best_pair[0])
-            detection_pool.remove(best_pair[1])
+        for row_index, col_index in zip(row_indices.tolist(), col_indices.tolist()):
+            pair_cost = float(cost_matrix[row_index, col_index])
+            if pair_cost > self._match_cost_threshold:
+                continue
+            matches.append((track_ids[row_index], detection_indices[col_index]))
 
         return matches
 
-    def _association_score(
+    def _build_cost_matrix(
+        self,
+        track_ids: list[int],
+        detection_indices: list[int],
+        boxes: NDArray[np.float32],
+        embeddings: EmbeddingArray | None,
+    ) -> NDArray[np.float32]:
+        costs = np.zeros((len(track_ids), len(detection_indices)), dtype=np.float32)
+        for row_index, track_id in enumerate(track_ids):
+            track_state = self._active_tracks[track_id]
+            for column_index, detection_index in enumerate(detection_indices):
+                detection_embedding = None if embeddings is None else embeddings[detection_index]
+                costs[row_index, column_index] = self._association_distance(
+                    track_state=track_state,
+                    detection_box=boxes[detection_index],
+                    detection_embedding=detection_embedding,
+                )
+        return costs
+
+    def _association_distance(
         self,
         track_state: _TrackState,
         detection_box: NDArray[np.float32],
         detection_embedding: NDArray[np.float32] | None,
     ) -> float:
-        motion_score = self._iou(track_state.bbox_xyxy, detection_box)
+        iou_distance = 1.0 - self._iou(track_state.bbox_xyxy, detection_box)
 
         if (
             not self.use_embeddings
             or detection_embedding is None
             or track_state.embedding is None
         ):
-            return motion_score
+            return float(max(0.0, min(1.0, iou_distance)))
 
-        appearance_score = self._cosine_similarity(track_state.embedding, detection_embedding)
-        combined_score = (self.motion_weight * motion_score) + (self.embedding_weight * appearance_score)
-        return float(max(0.0, min(1.0, combined_score)))
+        if track_state.embedding.shape[0] != detection_embedding.shape[0]:
+            return float(max(0.0, min(1.0, iou_distance)))
+
+        cosine_similarity = self._cosine_similarity(track_state.embedding, detection_embedding)
+        cosine_distance = 1.0 - cosine_similarity
+
+        combined_distance = (self.association_alpha * iou_distance) + (
+            (1.0 - self.association_alpha) * cosine_distance
+        )
+        return float(max(0.0, min(1.0, combined_distance)))
+
+    @staticmethod
+    def _greedy_assignment(cost_matrix: NDArray[np.float32]) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+        flat_indices = np.argsort(cost_matrix, axis=None)
+        used_rows: set[int] = set()
+        used_columns: set[int] = set()
+        matched_rows: list[int] = []
+        matched_columns: list[int] = []
+
+        for flat_index in flat_indices.tolist():
+            row_index, column_index = np.unravel_index(flat_index, cost_matrix.shape)
+            if row_index in used_rows or column_index in used_columns:
+                continue
+            used_rows.add(int(row_index))
+            used_columns.add(int(column_index))
+            matched_rows.append(int(row_index))
+            matched_columns.append(int(column_index))
+
+        return np.asarray(matched_rows, dtype=np.int64), np.asarray(matched_columns, dtype=np.int64)
 
     @staticmethod
     def _iou(box_a: NDArray[np.float32], box_b: NDArray[np.float32]) -> float:
