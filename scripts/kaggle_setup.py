@@ -34,17 +34,48 @@ def _can_import(module_name: str) -> bool:
         return False
 
 
+def _has_compatible_torchreid() -> bool:
+    try:
+        torchreid_module = importlib.import_module("torchreid")
+    except Exception:
+        return False
+
+    models_api = getattr(torchreid_module, "models", None)
+    has_models_api = models_api is not None and hasattr(models_api, "build_model")
+    if not has_models_api:
+        return False
+
+    try:
+        from torchreid.utils import load_pretrained_weights as _  # noqa: F401
+    except Exception:
+        return False
+
+    return True
+
+
 def _ensure_torchreid_runtime() -> None:
-    if _can_import("torchreid"):
+    if _has_compatible_torchreid():
         return
 
-    print("torchreid import failed after requirements install; applying Kaggle fallback install;")
+    print("Compatible torchreid runtime was not found; applying Kaggle fallback install;")
     _run([sys.executable, "-m", "pip", "install", "yacs", "tensorboard", "future", "gdown"])
-    _run([sys.executable, "-m", "pip", "install", "git+https://github.com/KaiyangZhou/deep-person-reid.git"])
 
-    if not _can_import("torchreid"):
+    _run([sys.executable, "-m", "pip", "uninstall", "-y", "torchreid"])
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            "git+https://github.com/KaiyangZhou/deep-person-reid.git",
+        ]
+    )
+
+    if not _has_compatible_torchreid():
         raise RuntimeError(
-            "torchreid is still unavailable after fallback installation; "
+            "Compatible torchreid runtime is still unavailable after fallback installation; "
             "check pip output for dependency conflicts."
         )
 

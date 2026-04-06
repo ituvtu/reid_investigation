@@ -30,7 +30,7 @@ SoccerNet>=0.1.62
 git+https://github.com/JonathonLuiten/TrackEval.git
 
 # Re-identification;
-torchreid>=0.2.5
+git+https://github.com/KaiyangZhou/deep-person-reid.git
 yacs>=0.1.8
 tensorboard>=2.16
 future>=1.0.0

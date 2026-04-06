@@ -15,12 +15,17 @@ except Exception:  # pragma: no cover
 
 try:
     import torchreid
-    from torchreid.utils import load_pretrained_weights
     _torchreid_import_error: Exception | None = None
 except Exception as error:  # pragma: no cover
     torchreid = None  # type: ignore[assignment]
-    load_pretrained_weights = None  # type: ignore[assignment]
     _torchreid_import_error = error
+
+try:
+    from torchreid.utils import load_pretrained_weights
+    _torchreid_utils_import_error: Exception | None = None
+except Exception as error:  # pragma: no cover
+    load_pretrained_weights = None  # type: ignore[assignment]
+    _torchreid_utils_import_error = error
 
 
 class OSNetReID(BaseReID):
@@ -94,6 +99,13 @@ class OSNetReID(BaseReID):
                 + details
             ) from _torchreid_import_error
 
+        if not hasattr(torchreid, "models") or not hasattr(torchreid.models, "build_model"):
+            raise ImportError(
+                "Detected an incompatible torchreid package variant; expected deep-person-reid API "
+                "with torchreid.models.build_model. Reinstall with "
+                "`pip install --force-reinstall git+https://github.com/KaiyangZhou/deep-person-reid.git`."
+            )
+
         runtime_device = self._resolve_runtime_device(self._device)
         use_gpu = runtime_device.startswith("cuda")
         self._model = torchreid.models.build_model(
@@ -108,7 +120,16 @@ class OSNetReID(BaseReID):
 
         if self.model_path:
             if load_pretrained_weights is None:
-                raise ImportError("torchreid.utils.load_pretrained_weights is unavailable")
+                details = (
+                    f" Original import error: {_torchreid_utils_import_error}"
+                    if _torchreid_utils_import_error is not None
+                    else ""
+                )
+                raise ImportError(
+                    "torchreid.utils.load_pretrained_weights is unavailable; "
+                    "this usually means an incompatible torchreid installation."
+                    + details
+                )
             load_pretrained_weights(self._model, self.model_path)
 
         self._model.eval()
