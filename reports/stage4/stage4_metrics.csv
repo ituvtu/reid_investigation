@@ -1,0 +1,18 @@
+Metric,Value
+MOTA,12.424242424242426
+IDF1,9.363900548918307
+ID Swaps,717
+FPS,5.2262255651587495
+Processed Frames,120
+Association Alpha,0.7
+Match Threshold,0.75
+Temporal Buffer Size,30
+Temporal Memory Mode,ema
+Temporal EMA Momentum,0.9
+DINO Embedding Dim,384
+Detection Avg Latency ms,75.21833875835
+Preprocessing Avg Latency ms,2.9153569332568927
+DINO ReID Avg Latency ms,50.00884806653024
+OSNet ReID Avg Latency ms,29.666942350195313
+Association Avg Latency ms,33.43385533350253
+Embedding Buffer Update Avg Latency ms,0.0

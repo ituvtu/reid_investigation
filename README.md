@@ -7,6 +7,16 @@ Goal: Reproducible research workspace for soccer object detection, tracking, and
 This repository contains a modular pipeline for Stage 1 baseline evaluation and later ReID stages;
 Core logic is implemented in Python modules, while notebooks are used for orchestration and analysis;
 
+## Result Snapshots
+
+Latest selected figures are stored in `docs/images/` and are safe to keep in Git;
+
+![Stage comparison dashboard](docs/images/stage_comparison_dashboard.png)
+
+![Stage 3 frame latency](docs/images/stage_3_frame_latency.png)
+
+![Stage 4 frame latency](docs/images/stage_4_frame_latency.png)
+
 ## Project Structure
 
 - `core/`: Abstract contracts for detectors and trackers;
@@ -130,4 +140,12 @@ print("SOCCERNET_ROOT_DIR:", os.environ["SOCCERNET_ROOT_DIR"])
 
 - `.gitignore` excludes local environments, outputs, caches, and secrets;
 - Commit source modules, configs, notebooks, and documentation only;
+- Keep long-run generated artifacts under `reports/analysis/` as local workspace outputs;
+- Keep curated README figures under `docs/images/`;
 - Do not commit dataset files, model weights, or personal IDE settings;
+
+## Analysis Artifacts Policy
+
+- `reports/analysis/` is treated as transient output space;
+- Keep `.png` and `.svg` for analysis exports when needed;
+- Do not generate or store `.pdf` artifacts;

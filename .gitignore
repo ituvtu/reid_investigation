@@ -70,3 +70,11 @@ weights/
 # Temporary files
 *.tmp
 *.log
+
+# Generated analysis artifacts
+reports/analysis/
+reports/output*.png
+reports/output*.svg
+
+# PDF artifacts are not used in this repository
+*.pdf

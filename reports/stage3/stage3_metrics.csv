@@ -1,0 +1,12 @@
+Metric,Value
+MOTA,11.464646464646467
+IDF1,8.656330749354005
+ID Swaps,735.0
+FPS,6.7067616352865596
+Processed Frames,120.0
+Association Alpha,0.7
+Match Threshold,0.75
+Detection Avg Latency ms,79.01639462505348
+Preprocessing Avg Latency ms,2.9797358916615244
+ReID Extraction Avg Latency ms,31.645217316615042
+Association Avg Latency ms,35.38501645002725
