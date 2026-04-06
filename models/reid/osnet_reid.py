@@ -16,9 +16,11 @@ except Exception:  # pragma: no cover
 try:
     import torchreid
     from torchreid.utils import load_pretrained_weights
-except Exception:  # pragma: no cover
+    _torchreid_import_error: Exception | None = None
+except Exception as error:  # pragma: no cover
     torchreid = None  # type: ignore[assignment]
     load_pretrained_weights = None  # type: ignore[assignment]
+    _torchreid_import_error = error
 
 
 class OSNetReID(BaseReID):
@@ -80,7 +82,17 @@ class OSNetReID(BaseReID):
         if torch is None:
             raise ImportError("torch is required to load OSNetReID")
         if torchreid is None:
-            raise ImportError("torchreid is required to load OSNetReID")
+            details = (
+                f" Original import error: {_torchreid_import_error}"
+                if _torchreid_import_error is not None
+                else ""
+            )
+            raise ImportError(
+                "torchreid is required to load OSNetReID. "
+                "Install with `pip install torchreid yacs tensorboard future` "
+                "or `pip install git+https://github.com/KaiyangZhou/deep-person-reid.git`."
+                + details
+            ) from _torchreid_import_error
 
         runtime_device = self._resolve_runtime_device(self._device)
         use_gpu = runtime_device.startswith("cuda")

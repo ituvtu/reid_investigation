@@ -6,12 +6,36 @@ import os
 import shutil
 import subprocess
 import sys
+import importlib
 from pathlib import Path
 
 
 def _run(command: list[str]) -> None:
     print("$", " ".join(command))
     subprocess.run(command, check=True)
+
+
+def _can_import(module_name: str) -> bool:
+    try:
+        importlib.import_module(module_name)
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_torchreid_runtime() -> None:
+    if _can_import("torchreid"):
+        return
+
+    print("torchreid import failed after requirements install; applying Kaggle fallback install;")
+    _run([sys.executable, "-m", "pip", "install", "yacs", "tensorboard", "future", "gdown"])
+    _run([sys.executable, "-m", "pip", "install", "git+https://github.com/KaiyangZhou/deep-person-reid.git"])
+
+    if not _can_import("torchreid"):
+        raise RuntimeError(
+            "torchreid is still unavailable after fallback installation; "
+            "check pip output for dependency conflicts."
+        )
 
 
 def bootstrap_kaggle_workspace() -> Path:
@@ -31,6 +55,7 @@ def bootstrap_kaggle_workspace() -> Path:
         _run([sys.executable, "-m", "pip", "install", "uv"])
 
     _run(["uv", "pip", "install", "-r", "requirements.txt", "--system"])
+    _ensure_torchreid_runtime()
 
     default_dataset_root = Path("/kaggle/input/soccernet-tracking")
     if "SOCCERNET_ROOT_DIR" not in os.environ and default_dataset_root.exists():
