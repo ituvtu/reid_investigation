@@ -7,12 +7,23 @@ import shutil
 import subprocess
 import sys
 import importlib
+import tempfile
 from pathlib import Path
 
 
 def _run(command: list[str]) -> None:
     print("$", " ".join(command))
     subprocess.run(command, check=True)
+
+
+def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+    print("$", " ".join(command))
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.stdout.strip():
+        print(result.stdout.strip())
+    if result.stderr.strip():
+        print(result.stderr.strip())
+    return result
 
 
 def _can_import(module_name: str) -> bool:
@@ -38,6 +49,30 @@ def _ensure_torchreid_runtime() -> None:
         )
 
 
+def _install_requirements_with_fallback(uv_command: list[str], requirements_path: Path) -> None:
+    result = _run_capture(uv_command + ["pip", "install", "-r", str(requirements_path), "--system"])
+    if result.returncode == 0:
+        return
+
+    stderr_text = (result.stderr or "").lower()
+    has_dinov2_conflict = "dinov2" in stderr_text and "unsatisfiable" in stderr_text
+    if not has_dinov2_conflict:
+        raise RuntimeError(f"Failed to install requirements from {requirements_path};")
+
+    print("Detected dinov2 and torchvision resolver conflict; retrying without dinov2;")
+    lines = requirements_path.read_text(encoding="utf-8").splitlines()
+    filtered_lines = [line for line in lines if "dinov2" not in line.lower()]
+
+    with tempfile.NamedTemporaryFile("w", suffix="_requirements_no_dinov2.txt", delete=False, encoding="utf-8") as handle:
+        handle.write("\n".join(filtered_lines) + "\n")
+        fallback_requirements = Path(handle.name)
+
+    try:
+        _run(uv_command + ["pip", "install", "-r", str(fallback_requirements), "--system"])
+    finally:
+        fallback_requirements.unlink(missing_ok=True)
+
+
 def bootstrap_kaggle_workspace() -> Path:
     repo_url = os.environ.get("REID_REPO_URL", "https://github.com/ituvtu/reid_investigation.git")
     workspace_root = Path("/kaggle/working")
@@ -51,10 +86,14 @@ def bootstrap_kaggle_workspace() -> Path:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    if shutil.which("uv") is None:
+    uv_cli = shutil.which("uv")
+    if uv_cli is None:
         _run([sys.executable, "-m", "pip", "install", "uv"])
+        uv_command = [sys.executable, "-m", "uv"]
+    else:
+        uv_command = [uv_cli]
 
-    _run(["uv", "pip", "install", "-r", "requirements.txt", "--system"])
+    _install_requirements_with_fallback(uv_command, Path("requirements.txt"))
     _ensure_torchreid_runtime()
 
     default_dataset_root = Path("/kaggle/input/soccernet-tracking")
