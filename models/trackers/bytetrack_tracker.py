@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -30,6 +31,8 @@ class _TrackState:
     confidence: float
     class_id: int
     embedding: EmbeddingArray | None
+    embedding_gallery: list[NDArray[np.float32]] = field(default_factory=list)
+    ema_embedding: EmbeddingArray | None = None
     missed_frames: int = 0
 
 
@@ -43,6 +46,14 @@ class ByteTrackTracker(BaseTracker):
         self.track_buffer = int(config.get("track_buffer", 30))
         self.min_box_area = float(config.get("min_box_area", 10.0))
         self.use_embeddings = bool(config.get("use_embeddings", False))
+        self.use_temporal_buffer = bool(config.get("use_temporal_buffer", True))
+        self.embedding_buffer_size = max(1, int(config.get("embedding_buffer_size", 30)))
+
+        memory_mode = str(config.get("embedding_memory_mode", "ema")).strip().lower()
+        self.embedding_memory_mode = memory_mode if memory_mode in {"ema", "mean"} else "ema"
+
+        ema_momentum = float(config.get("embedding_ema_momentum", 0.9))
+        self.embedding_ema_momentum = max(0.0, min(0.999, ema_momentum))
 
         association_alpha = config.get("association_alpha")
         if association_alpha is None:
@@ -63,6 +74,10 @@ class ByteTrackTracker(BaseTracker):
         self._active_tracks: dict[int, _TrackState] = {}
         self._next_track_id = 1
         self._last_frame_index = -1
+        self._last_timing_ms: dict[str, float] = {
+            "association_cost_matrix": 0.0,
+            "embedding_buffer_update": 0.0,
+        }
 
     @staticmethod
     def _auto_device() -> str:
@@ -91,7 +106,14 @@ class ByteTrackTracker(BaseTracker):
         self._active_tracks.clear()
         self._next_track_id = 1
         self._last_frame_index = -1
+        self._last_timing_ms = {
+            "association_cost_matrix": 0.0,
+            "embedding_buffer_update": 0.0,
+        }
         self._is_initialized = True
+
+    def last_timing_ms(self) -> dict[str, float]:
+        return {key: float(value) for key, value in self._last_timing_ms.items()}
 
     def update(
         self,
@@ -135,6 +157,9 @@ class ByteTrackTracker(BaseTracker):
     ) -> list[Track]:
         if not self._is_initialized:
             self.initialize()
+
+        self._last_timing_ms["association_cost_matrix"] = 0.0
+        self._last_timing_ms["embedding_buffer_update"] = 0.0
 
         boxes = self._to_numpy(bboxes_xyxy, dtype=np.float32)
         scores = self._to_numpy(confidences, dtype=np.float32).reshape(-1)
@@ -241,12 +266,20 @@ class ByteTrackTracker(BaseTracker):
         self._active_tracks.clear()
         self._next_track_id = 1
         self._last_frame_index = -1
+        self._last_timing_ms = {
+            "association_cost_matrix": 0.0,
+            "embedding_buffer_update": 0.0,
+        }
         self._is_initialized = True
 
     def shutdown(self) -> None:
         self._active_tracks.clear()
         self._next_track_id = 1
         self._last_frame_index = -1
+        self._last_timing_ms = {
+            "association_cost_matrix": 0.0,
+            "embedding_buffer_update": 0.0,
+        }
         self._is_initialized = False
 
     @staticmethod
@@ -305,6 +338,7 @@ class ByteTrackTracker(BaseTracker):
         boxes: NDArray[np.float32],
         embeddings: EmbeddingArray | None,
     ) -> NDArray[np.float32]:
+        started_at = time.perf_counter()
         costs = np.zeros((len(track_ids), len(detection_indices)), dtype=np.float32)
         for row_index, track_id in enumerate(track_ids):
             track_state = self._active_tracks[track_id]
@@ -315,6 +349,8 @@ class ByteTrackTracker(BaseTracker):
                     detection_box=boxes[detection_index],
                     detection_embedding=detection_embedding,
                 )
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        self._last_timing_ms["association_cost_matrix"] += float(elapsed_ms)
         return costs
 
     def _association_distance(
@@ -400,19 +436,22 @@ class ByteTrackTracker(BaseTracker):
         matched_track_ids: set[int],
         used_detection_indices: set[int],
     ) -> None:
+        buffer_update_ms = 0.0
         for track_id, detection_index in matches:
             state = self._active_tracks[track_id]
             state.bbox_xyxy = boxes[detection_index].copy()
             state.confidence = float(scores[detection_index])
             state.class_id = int(labels[detection_index])
-            state.embedding = (
-                None
-                if embeddings is None
-                else np.asarray(embeddings[detection_index], dtype=np.float32).copy()
-            )
+            if embeddings is not None:
+                started_at = time.perf_counter()
+                embedding = np.asarray(embeddings[detection_index], dtype=np.float32).copy()
+                self._update_track_embedding_state(state, embedding)
+                buffer_update_ms += (time.perf_counter() - started_at) * 1000.0
             state.missed_frames = 0
             matched_track_ids.add(track_id)
             used_detection_indices.add(detection_index)
+
+        self._last_timing_ms["embedding_buffer_update"] += float(buffer_update_ms)
 
     def _mark_unmatched_tracks(self, unmatched_track_ids: list[int]) -> None:
         for track_id in unmatched_track_ids:
@@ -435,21 +474,65 @@ class ByteTrackTracker(BaseTracker):
         labels: NDArray[np.int32],
         embeddings: EmbeddingArray | None,
     ) -> None:
+        buffer_update_ms = 0.0
         for detection_index in detection_indices:
             track_id = self._next_track_id
             self._next_track_id += 1
 
-            self._active_tracks[track_id] = _TrackState(
+            state = _TrackState(
                 track_id=track_id,
                 bbox_xyxy=boxes[detection_index].copy(),
                 confidence=float(scores[detection_index]),
                 class_id=int(labels[detection_index]),
-                embedding=(
-                    None
-                    if embeddings is None
-                    else np.asarray(embeddings[detection_index], dtype=np.float32).copy()
-                ),
+                embedding=None,
             )
+            if embeddings is not None:
+                started_at = time.perf_counter()
+                embedding = np.asarray(embeddings[detection_index], dtype=np.float32).copy()
+                self._update_track_embedding_state(state, embedding)
+                buffer_update_ms += (time.perf_counter() - started_at) * 1000.0
+
+            self._active_tracks[track_id] = state
+
+        self._last_timing_ms["embedding_buffer_update"] += float(buffer_update_ms)
+
+    @staticmethod
+    def _normalize_embedding(embedding: NDArray[np.float32]) -> NDArray[np.float32]:
+        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vector))
+        if norm <= 0.0:
+            return vector
+        return (vector / norm).astype(np.float32, copy=False)
+
+    def _update_track_embedding_state(self, track_state: _TrackState, embedding: NDArray[np.float32]) -> None:
+        normalized = self._normalize_embedding(embedding)
+
+        if not self.use_temporal_buffer:
+            track_state.embedding = normalized.copy()
+            track_state.embedding_gallery = [normalized.copy()]
+            track_state.ema_embedding = normalized.copy()
+            return
+
+        gallery = track_state.embedding_gallery
+        gallery.append(normalized.copy())
+        if len(gallery) > self.embedding_buffer_size:
+            del gallery[0 : len(gallery) - self.embedding_buffer_size]
+
+        if track_state.ema_embedding is None:
+            ema_embedding = normalized.copy()
+        else:
+            ema_embedding = (
+                (self.embedding_ema_momentum * track_state.ema_embedding)
+                + ((1.0 - self.embedding_ema_momentum) * normalized)
+            ).astype(np.float32, copy=False)
+        track_state.ema_embedding = self._normalize_embedding(ema_embedding)
+
+        if self.embedding_memory_mode == "mean":
+            mean_embedding = np.mean(np.asarray(gallery, dtype=np.float32), axis=0).astype(np.float32, copy=False)
+            track_state.embedding = self._normalize_embedding(mean_embedding)
+            return
+
+        track_state.embedding = track_state.ema_embedding.copy()
 
     def _export_visible_tracks(self) -> list[Track]:
         visible_tracks: list[Track] = []
