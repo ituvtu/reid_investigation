@@ -26,6 +26,17 @@ def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
     return result
 
 
+def _is_build_isolation_issue(stderr_text: str) -> bool:
+    normalized = stderr_text.lower()
+    markers = (
+        "build backend returned an error",
+        "no module named 'numpy'",
+        "no module named 'wrapt'",
+        "no-build-isolation",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _can_import(module_name: str) -> bool:
     try:
         importlib.import_module(module_name)
@@ -82,13 +93,23 @@ def _ensure_torchreid_runtime() -> None:
 
 def _install_requirements_with_fallback(uv_command: list[str], requirements_path: Path) -> None:
     result = _run_capture(uv_command + ["pip", "install", "-r", str(requirements_path), "--system"])
+    if result.returncode != 0 and _is_build_isolation_issue(result.stderr or ""):
+        print("Detected build-isolation issue; retrying with --no-build-isolation;")
+        _run([sys.executable, "-m", "pip", "install", "-q", "numpy", "wrapt", "setuptools", "wheel"])
+        result = _run_capture(
+            uv_command + ["pip", "install", "-r", str(requirements_path), "--system", "--no-build-isolation"]
+        )
+
     if result.returncode == 0:
         return
 
     stderr_text = (result.stderr or "").lower()
     has_dinov2_conflict = "dinov2" in stderr_text and "unsatisfiable" in stderr_text
     if not has_dinov2_conflict:
-        raise RuntimeError(f"Failed to install requirements from {requirements_path};")
+        print("uv install is still failing; falling back to pip --no-build-isolation;")
+        _run([sys.executable, "-m", "pip", "install", "-q", "numpy", "wrapt", "setuptools", "wheel"])
+        _run([sys.executable, "-m", "pip", "install", "-r", str(requirements_path), "--no-build-isolation"])
+        return
 
     print("Detected dinov2 and torchvision resolver conflict; retrying without dinov2;")
     lines = requirements_path.read_text(encoding="utf-8").splitlines()
@@ -99,7 +120,10 @@ def _install_requirements_with_fallback(uv_command: list[str], requirements_path
         fallback_requirements = Path(handle.name)
 
     try:
-        _run(uv_command + ["pip", "install", "-r", str(fallback_requirements), "--system"])
+        _run(
+            uv_command
+            + ["pip", "install", "-r", str(fallback_requirements), "--system", "--no-build-isolation"]
+        )
     finally:
         fallback_requirements.unlink(missing_ok=True)
 
