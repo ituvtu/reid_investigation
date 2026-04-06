@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 import importlib
-import tempfile
 from pathlib import Path
 
 
@@ -35,6 +34,11 @@ def _is_build_isolation_issue(stderr_text: str) -> bool:
         "no-build-isolation",
     )
     return any(marker in normalized for marker in markers)
+
+
+def _is_dinov2_solver_conflict(text: str) -> bool:
+    normalized = text.lower()
+    return "dinov2" in normalized and "unsatisfiable" in normalized
 
 
 def _can_import(module_name: str) -> bool:
@@ -92,40 +96,57 @@ def _ensure_torchreid_runtime() -> None:
 
 
 def _install_requirements_with_fallback(uv_command: list[str], requirements_path: Path) -> None:
-    result = _run_capture(uv_command + ["pip", "install", "-r", str(requirements_path), "--system"])
-    if result.returncode != 0 and _is_build_isolation_issue(result.stderr or ""):
-        print("Detected build-isolation issue; retrying with --no-build-isolation;")
-        _run([sys.executable, "-m", "pip", "install", "-q", "numpy", "wrapt", "setuptools", "wheel"])
-        result = _run_capture(
-            uv_command + ["pip", "install", "-r", str(requirements_path), "--system", "--no-build-isolation"]
-        )
+    runtime_requirements = Path("/tmp/requirements_stage2_runtime_no_dinov2.txt")
+    lines = requirements_path.read_text(encoding="utf-8").splitlines()
+    filtered_lines = [line for line in lines if "dinov2" not in line.lower()]
+    runtime_requirements.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
 
+    include_dinov2_optional = os.environ.get("INSTALL_DINOV2_OPTIONAL", "0") == "1"
+    requirements_to_install = requirements_path if include_dinov2_optional else runtime_requirements
+
+    if include_dinov2_optional:
+        print("INSTALL_DINOV2_OPTIONAL=1; using full requirements;")
+    else:
+        print("Using runtime requirements without dinov2 for compatibility;")
+
+    result = _run_capture(uv_command + ["pip", "install", "-r", str(requirements_to_install), "--system"])
     if result.returncode == 0:
         return
 
-    stderr_text = (result.stderr or "").lower()
-    has_dinov2_conflict = "dinov2" in stderr_text and "unsatisfiable" in stderr_text
-    if not has_dinov2_conflict:
-        print("uv install is still failing; falling back to pip --no-build-isolation;")
-        _run([sys.executable, "-m", "pip", "install", "-q", "numpy", "wrapt", "setuptools", "wheel"])
-        _run([sys.executable, "-m", "pip", "install", "-r", str(requirements_path), "--no-build-isolation"])
+    merged_output = f"{result.stdout}\n{result.stderr}"
+
+    if _is_dinov2_solver_conflict(merged_output):
+        print("Detected dinov2 solver conflict; retrying without dinov2;")
+        requirements_to_install = runtime_requirements
+        retry_no_dino = _run_capture(
+            uv_command + ["pip", "install", "-r", str(requirements_to_install), "--system", "--no-build-isolation"]
+        )
+        if retry_no_dino.returncode == 0:
+            return
+        print("uv retry without dinov2 failed; fallback to pip --no-build-isolation;")
+        _run([sys.executable, "-m", "pip", "install", "-r", str(requirements_to_install), "--no-build-isolation"])
         return
 
-    print("Detected dinov2 and torchvision resolver conflict; retrying without dinov2;")
-    lines = requirements_path.read_text(encoding="utf-8").splitlines()
-    filtered_lines = [line for line in lines if "dinov2" not in line.lower()]
-
-    with tempfile.NamedTemporaryFile("w", suffix="_requirements_no_dinov2.txt", delete=False, encoding="utf-8") as handle:
-        handle.write("\n".join(filtered_lines) + "\n")
-        fallback_requirements = Path(handle.name)
-
-    try:
-        _run(
-            uv_command
-            + ["pip", "install", "-r", str(fallback_requirements), "--system", "--no-build-isolation"]
+    if _is_build_isolation_issue(merged_output):
+        print("Detected build-isolation issue; retrying with --no-build-isolation;")
+        _run([sys.executable, "-m", "pip", "install", "-q", "numpy", "wrapt", "setuptools", "wheel"])
+        retry_result = _run_capture(
+            uv_command + ["pip", "install", "-r", str(requirements_to_install), "--system", "--no-build-isolation"]
         )
-    finally:
-        fallback_requirements.unlink(missing_ok=True)
+
+        if retry_result.returncode == 0:
+            return
+
+        retry_merged_output = f"{retry_result.stdout}\n{retry_result.stderr}"
+        if _is_dinov2_solver_conflict(retry_merged_output):
+            print("Detected dinov2 solver conflict after build retry; switching to requirements without dinov2;")
+            requirements_to_install = runtime_requirements
+
+        print("uv retry is still failing; falling back to pip --no-build-isolation;")
+        _run([sys.executable, "-m", "pip", "install", "-r", str(requirements_to_install), "--no-build-isolation"])
+        return
+
+    raise RuntimeError("Failed to install requirements via uv fallback strategy;")
 
 
 def bootstrap_kaggle_workspace() -> Path:
