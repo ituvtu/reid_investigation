@@ -51,6 +51,6 @@ dataset:
   soccernet:
     root_dir: /kaggle/input/soccernet-tracking
     subset: tracking
-    split: [train, valid, test]
+    split: [train, test]
     password: null
     auto_download: true
