@@ -22,7 +22,7 @@ from utils.config_loader import (
 	tracker_config_to_mapping,
 )
 from utils.data_loader import SoccerNetDownloadConfig, SoccerNetLoader, SoccerNetLoaderError
-from utils.metrics import MetricsError, compute_mot_id_metrics
+from utils.metrics import LatencyTimer, MetricsError, compute_mot_id_metrics
 from utils.video_utils import (
 	VideoSource,
 	ensure_video_path,
@@ -52,6 +52,7 @@ __all__ = [
 	"load_stage2_reid_config",
 	"load_yaml",
 	"compute_mot_id_metrics",
+	"LatencyTimer",
 	"MetricsError",
 	"open_video_capture",
 	"parse_stage1_baseline_config",

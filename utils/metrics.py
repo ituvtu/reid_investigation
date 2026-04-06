@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Iterator, Mapping, Sequence
+
+import time
 
 import motmetrics as mm
 import numpy as np
@@ -18,6 +22,120 @@ if not hasattr(np, "asfarray"):
 
 class MetricsError(RuntimeError):
     pass
+
+
+@dataclass(slots=True)
+class _LatencyFrameRecord:
+    frame_index: int
+    stage_durations_ms: dict[str, float]
+    total_duration_ms: float
+    metadata: dict[str, Any]
+
+
+class LatencyTimer:
+    def __init__(self, stage_names: Sequence[str] | None = None) -> None:
+        self._default_stage_names = tuple(stage_names or ())
+        self._frame_records: list[_LatencyFrameRecord] = []
+        self._current_frame_index: int | None = None
+        self._current_stage_durations_ms: dict[str, float] = {}
+        self._current_frame_started_at: float | None = None
+
+    def reset(self) -> None:
+        self._frame_records.clear()
+        self._current_frame_index = None
+        self._current_stage_durations_ms = {}
+        self._current_frame_started_at = None
+
+    def start_frame(self, frame_index: int) -> None:
+        if self._current_frame_index is not None:
+            raise MetricsError("Cannot start a new frame before ending the previous frame")
+
+        self._current_frame_index = int(frame_index)
+        self._current_stage_durations_ms = {name: 0.0 for name in self._default_stage_names}
+        self._current_frame_started_at = time.perf_counter()
+
+    def end_frame(self, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        if self._current_frame_index is None or self._current_frame_started_at is None:
+            raise MetricsError("Cannot end frame because no active frame is started")
+
+        total_duration_ms = (time.perf_counter() - self._current_frame_started_at) * 1000.0
+        metadata_payload = dict(metadata or {})
+
+        record = _LatencyFrameRecord(
+            frame_index=self._current_frame_index,
+            stage_durations_ms=dict(self._current_stage_durations_ms),
+            total_duration_ms=float(total_duration_ms),
+            metadata=metadata_payload,
+        )
+        self._frame_records.append(record)
+
+        payload = {
+            "frame_index": int(record.frame_index),
+            "stage_durations_ms": dict(record.stage_durations_ms),
+            "total_duration_ms": float(record.total_duration_ms),
+            "metadata": dict(record.metadata),
+        }
+
+        self._current_frame_index = None
+        self._current_stage_durations_ms = {}
+        self._current_frame_started_at = None
+        return payload
+
+    @contextmanager
+    def measure(self, stage_name: str) -> Iterator[None]:
+        if self._current_frame_index is None:
+            raise MetricsError("Cannot measure stage because no active frame is started")
+
+        started_at = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+            self.add_stage_duration(stage_name, elapsed_ms)
+
+    def add_stage_duration(self, stage_name: str, duration_ms: float) -> None:
+        if self._current_frame_index is None:
+            raise MetricsError("Cannot add stage duration because no active frame is started")
+
+        key = str(stage_name)
+        value = float(duration_ms)
+        self._current_stage_durations_ms[key] = self._current_stage_durations_ms.get(key, 0.0) + value
+
+    def frame_records(self) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for record in self._frame_records:
+            payload.append(
+                {
+                    "frame_index": int(record.frame_index),
+                    "stage_durations_ms": dict(record.stage_durations_ms),
+                    "total_duration_ms": float(record.total_duration_ms),
+                    "metadata": dict(record.metadata),
+                }
+            )
+        return payload
+
+    def average_stage_durations_ms(self) -> dict[str, float]:
+        if not self._frame_records:
+            return {}
+
+        totals: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for record in self._frame_records:
+            for stage_name, duration_ms in record.stage_durations_ms.items():
+                totals[stage_name] = totals.get(stage_name, 0.0) + float(duration_ms)
+                counts[stage_name] = counts.get(stage_name, 0) + 1
+
+        averages: dict[str, float] = {}
+        for stage_name, total_ms in totals.items():
+            count = counts.get(stage_name, 0)
+            averages[stage_name] = (total_ms / float(count)) if count > 0 else 0.0
+        return averages
+
+    def average_total_duration_ms(self) -> float:
+        if not self._frame_records:
+            return 0.0
+        total_ms = sum(record.total_duration_ms for record in self._frame_records)
+        return float(total_ms) / float(len(self._frame_records))
 
 
 def compute_mot_id_metrics(
