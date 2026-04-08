@@ -29,7 +29,7 @@ Latest selected figures are stored in `docs/images/` and are safe to keep in Git
 
 - Python: `3.12`;
 - Package manager: `uv`;
-- Runtime target: Google Colab with T4 GPU and Kaggle Notebook with GPU;
+- Runtime target: Kaggle Notebook;
 
 ## Local Setup
 
